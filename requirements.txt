@@ -1,0 +1,15 @@
+xarray
+netCDF4
+affine
+
+matplotlib
+cartopy
+folium
+geopandas
+shapely
+rasterio
+
+pandas
+numpy
+
+IPython

@@ -1,4 +1,28 @@
+"""
+Functions for visualizing LUCAS Land Use and Land Cover (LUC) change datasets.
+
+This module provides tools to explore and compare land cover fractions from
+xarray Datasets from the LUCAS LUC datasets.
+It includes functions to:
+- Visualize the dominant land use type on an interactive map.
+- Compare land use composition between two time points using pie charts.
+- Compare land use changes between two time points using bar charts
+  (relative change and change in proportion).
+- Map the change in fraction for a specific land cover type between two times.
+
+Key Dependencies:
+- xarray: For handling the core data structures.
+- geopandas: For spatial operations and interactive map creation.
+- matplotlib: For static plotting (pie charts, bar charts).
+- cartopy: For adding geographical context (coastlines, borders) to maps.
+- rasterio: For polygonizing raster data.
+- pandas: For data manipulation.
+- numpy: For numerical operations.
+"""
+
 from affine import Affine
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import geopandas as gpd
 from IPython.display import HTML
 import matplotlib.pyplot as plt
@@ -7,8 +31,7 @@ import pandas as pd
 from rasterio import features
 from shapely.geometry import shape
 import xarray as xr
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
+
 
 # Constants
 lctype_to_name = {
@@ -58,9 +81,8 @@ quebec_bbox_360 = [280, 303, 44.8, 62.3]
 project_bbox = [266, 307.3, 41.7, 62.5]
 
 
-# %% Load select_bbox
 def _select_bbox(ds, bbox):
-    """Select data within a bounding box.
+    """Select data within a bounding box in the 0-360 range.
 
     Args:
         ds: xarray Dataset or DataArray
@@ -73,11 +95,20 @@ def _select_bbox(ds, bbox):
     return ds.sel(lon=slice(lon_min, lon_max), lat=slice(lat_min, lat_max))
 
 
-def _get_dominant_land_use(ds, time, region_bbox=None):
-    """Get the dominant land use type for a given time and region."""
+def _get_dominant_land_use(ds, time, bbox=None):
+    """Get the dominant land use type for a given time and region.
+
+    Args:
+        ds: xarray Dataset or DataArray
+        time: time to plot
+        bbox: optional bounding box
+
+    Returns:
+        xarray.DataArray with the dominant land use type
+    """
     land_use = ds.landCoverFrac.sel(time=time)
-    if region_bbox:
-        land_use = _select_bbox(land_use, region_bbox)
+    if bbox:
+        land_use = _select_bbox(land_use, bbox)
 
     # First get the dominant type
     dominant_type = land_use.fillna(0).argmax(dim="lctype") + 1
@@ -89,9 +120,8 @@ def _get_dominant_land_use(ds, time, region_bbox=None):
     return dominant_type
 
 
-# %%
 def _polygonize_dominant_land_use(dominant_type: xr.DataArray):
-    """Polygonize the dominant land use xarray.DataArray.
+    """Polygonize the dominant land use xarray.DataArray for better visualization.
 
     Args:
         dominant_type: xarray.DataArray with the dominant land use types
@@ -116,7 +146,6 @@ def _polygonize_dominant_land_use(dominant_type: xr.DataArray):
         connectivity=8,  # Use 8-connectivity for diagonal connections
     )
 
-    # Convert to list of dictionaries with geometry and properties
     geometries = []
     properties = []
     for geom, value in shapes:
@@ -130,15 +159,16 @@ def _polygonize_dominant_land_use(dominant_type: xr.DataArray):
             )
 
     if not geometries:  # Check if we have any valid polygons
-        return gpd.GeoDataFrame(
-            [],  # Empty data list
-            columns=["land_use_type", "land_use_name", "geometry"],
+        # Create an empty GeoDataFrame with the correct columns and CRS
+        return gpd.GeoDataFrame(  # type: ignore
+            geometry=[],
             crs="EPSG:4326",
+            columns=["land_use_type", "land_use_name", "geometry"],
         )
 
     # Create GeoDataFrame with explicit geometry column
-    gdf = gpd.GeoDataFrame(
-        data=properties,  # Use data keyword argument
+    gdf = gpd.GeoDataFrame(  # type: ignore
+        data=properties,
         geometry=geometries,
         crs="EPSG:4326",
     )
@@ -150,21 +180,20 @@ def _polygonize_dominant_land_use(dominant_type: xr.DataArray):
     return gdf
 
 
-# %%
-def explore_dominant_LUC(ds, time, region_bbox=None, title=None):
+def explore_dominant_LUC(ds, time, bbox=None, title=None):
     """Create an interactive map of dominant land use types using geopandas.explore.
 
     Args:
         ds: xarray Dataset
         time: time to plot
-        region_bbox: optional bounding box
+        bbox: optional bounding box
         title: optional title
 
     Returns:
         folium.Map: Interactive map with colored polygons and legend
     """
     # Get dominant land use and convert to polygons
-    dominant_type = _get_dominant_land_use(ds, time, region_bbox)
+    dominant_type = _get_dominant_land_use(ds, time, bbox)
     gdf = _polygonize_dominant_land_use(dominant_type)
 
     # Create a colorlist from the land_use_colormap that matches the land_use_type of the dataset
@@ -198,7 +227,22 @@ def explore_dominant_LUC(ds, time, region_bbox=None, title=None):
 
 
 def _get_df_of_total_land_use(ds1, time1, ds2, time2, bbox=None):
-    """Get a dataframe of the total land use for two times"""
+    """Get a dataframe of the total land use for two times.
+
+    The returned dataframs has 16 rows (one for each land use type) and 5 columns:
+    - lctype: the land use type
+    - name: the name of the land use type
+    - color: the color of the land use type
+    - t1: the total land use for time1 for the given lctype
+    - t2: the total land use for time2 for the given lctype
+
+    Args:
+        ds1: xarray Dataset
+        time1: time to plot
+        ds2: xarray Dataset
+        time2: time to plot
+        bbox: optional bounding box
+    """
     t1_data = ds1.landCoverFrac.sel(time=time1)
     t2_data = ds2.landCoverFrac.sel(time=time2)
     if bbox:
@@ -255,11 +299,25 @@ def _test_inputs(ds1, time1, ds2, time2, bbox=None):
     return True
 
 
-def compare_LUC_pie(ds1, time1, ds2, time2, region_bbox=None):
-    """Create two pie charts of the total land use percent for two years"""
-    if not _test_inputs(ds1, time1, ds2, time2, region_bbox):
+def compare_LUC_pie(ds1, time1, ds2, time2, bbox=None):
+    """Create two pie charts of the total land use percent for two years.
+
+    This function displays two pie charts side by side using matplotlib,
+    showing the land use composition for the specified time points.
+
+    Args:
+        ds1: xarray Dataset
+        time1: time to plot
+        ds2: xarray Dataset
+        time2: time to plot
+        bbox: optional bounding box
+
+    Returns:
+        None
+    """
+    if not _test_inputs(ds1, time1, ds2, time2, bbox):
         return
-    df = _get_df_of_total_land_use(ds1, time1, ds2, time2, region_bbox)
+    df = _get_df_of_total_land_use(ds1, time1, ds2, time2, bbox)
 
     # Plot the pie charts
     fig, ax = plt.subplots(1, 2, figsize=(12, 6), subplot_kw=dict(aspect="equal"))
@@ -288,14 +346,14 @@ def compare_LUC_pie(ds1, time1, ds2, time2, region_bbox=None):
     plt.show()
 
 
-# %%
 def compare_LUC_bar(ds1, time1, ds2, time2, bbox=quebec_bbox_360):
-    """
-    Plot both the relative percentage change and the change in percentage points
-    of land use types between two time points, side-by-side.
+    """Plot relative and absolute land use changes between two time points.
 
-    Relative Change: (Area_t2 - Area_t1) / Area_t1 * 100%. Excludes types with zero area at time1.
-    Share Change: %Share_t2 - %Share_t1 (change in percentage points of total area).
+    This function displays two bar charts side-by-side using matplotlib:
+    1. Relative Percentage Change: ((Area_t2 - Area_t1) / Area_t1) * 100%.
+       Excludes types with zero area at time1.
+    2. Land Use Proportions: The proportion of total area for each land use type
+       at time1 and time2.
 
     Args:
         ds1: xarray Dataset for the first time point.
@@ -303,6 +361,9 @@ def compare_LUC_bar(ds1, time1, ds2, time2, bbox=quebec_bbox_360):
         ds2: xarray Dataset for the second time point.
         time2: Time identifier for the second dataset.
         bbox: Optional bounding box [lon_min, lon_max, lat_min, lat_max] (0-360).
+
+    Returns:
+        None
     """
     if not _test_inputs(ds1, time1, ds2, time2, bbox):
         return
@@ -312,25 +373,40 @@ def compare_LUC_bar(ds1, time1, ds2, time2, bbox=quebec_bbox_360):
     t2_total = df["t2"].sum()
 
     df["change_percent"] = ((df["t2"] - df["t1"]) / df["t1"]) * 100
+    # Replace inf with NaN to handle division by zero
+    df["change_percent"] = df["change_percent"].replace([np.inf, -np.inf], np.nan)
+
     df["t1_share"] = df["t1"] / t1_total
     df["t2_share"] = df["t2"] / t2_total
 
     # --- Prepare data for plotting ---
-    red_green = ["#d62728" if v < 0 else "#2ca02c" for v in df["change_percent"]]
-    labels = df["name"]
+    valid_change_mask = ~df["change_percent"].isna()
+    red_green = [
+        "#d62728" if v < 0 else "#2ca02c"
+        for v in df.loc[valid_change_mask, "change_percent"]
+    ]
+    labels = df.loc[valid_change_mask, "name"]
+    change_percent_valid = df.loc[valid_change_mask, "change_percent"]
+
     # --- Plotting ---
     plt.style.use("seaborn-v0_8-talk")
     fig, (ax1, ax2) = plt.subplots(
-        1, 2, figsize=(18, max(6, len(labels) * 0.4)), sharey=True
-    )  # Adjust height based on labels
+        1,
+        2,
+        figsize=(18, max(6, len(labels) * 0.4)),
+        sharey=True,  # Share y-axis including ticks and labels
+    )
     fig.suptitle(f"Land Use Comparison: {time1} vs {time2}", fontsize=16)
 
     # Plot 1: Relative Percentage Change
-    bars1 = ax1.barh(labels, df["change_percent"], color=red_green)
+    bars1 = ax1.barh(labels, change_percent_valid, color=red_green)
     ax1.bar_label(bars1, fmt="%.1f%%", padding=3, fontsize=9)
     max_abs_change1 = (
-        np.max(np.abs(df["change_percent"])) if len(df["change_percent"]) > 0 else 1
+        np.nanmax(np.abs(change_percent_valid)) if len(change_percent_valid) > 0 else 1
     )
+    if pd.isna(max_abs_change1) or max_abs_change1 == 0:
+        max_abs_change1 = 1
+
     ax1.set_xlim(
         -max_abs_change1 * 1.15, max_abs_change1 * 1.15
     )  # Slightly more padding
@@ -343,17 +419,20 @@ def compare_LUC_bar(ds1, time1, ds2, time2, bbox=quebec_bbox_360):
     # Plot 2: Absolute Share Comparison (Grouped Bar Chart)
     bar_height = 0.35
     y_pos = np.arange(len(labels))
+    # Filter share data to match filtered labels
+    t1_share_valid = df.loc[valid_change_mask, "t1_share"]
+    t2_share_valid = df.loc[valid_change_mask, "t2_share"]
 
     bars_t1 = ax2.barh(
         y_pos + bar_height / 2,
-        df["t1_share"],
+        t1_share_valid,  # Use filtered data
         bar_height,
         label=f"{time1}",
         color="#1f77b4",
     )  # Blue
     bars_t2 = ax2.barh(
         y_pos - bar_height / 2,
-        df["t2_share"],
+        t2_share_valid,  # Use filtered data
         bar_height,
         label=f"{time2}",
         color="#ff7f0e",
@@ -366,15 +445,18 @@ def compare_LUC_bar(ds1, time1, ds2, time2, bbox=quebec_bbox_360):
     # Customize plot 2
     # Determine appropriate xlim. Max share value + padding.
     max_share = max(
-        np.max(df["t1_share"]) if len(df["t1_share"]) > 0 else 0,
-        np.max(df["t2_share"]) if len(df["t2_share"]) > 0 else 0,
+        (
+            np.nanmax(t1_share_valid) if len(t1_share_valid) > 0 else 0
+        ),  # Use nanmax and filtered data
+        (
+            np.nanmax(t2_share_valid) if len(t2_share_valid) > 0 else 0
+        ),  # Use nanmax and filtered data
     )
     ax2.set_xlim(0, max_share * 1.1)
 
-    ax2.set_yticks(y_pos)  # Ensure ticks are centered between the grouped bars
-    ax2.set_yticklabels(
-        labels
-    )  # Set labels (already done by sharey=True, but good practice)
+    # No need to set yticks/labels again if sharey=True is used correctly
+    # ax2.set_yticks(y_pos) # Redundant if sharey=True
+    # ax2.set_yticklabels(labels) # Redundant if sharey=True
     ax2.set_xlabel("Proportion of Total Area")
     ax2.set_title("Land Use Proportions")
     ax2.legend()
@@ -383,13 +465,28 @@ def compare_LUC_bar(ds1, time1, ds2, time2, bbox=quebec_bbox_360):
     for y in y_pos[:-1]:
         ax2.axhline(y + 0.5, color="grey", linestyle=":", linewidth=0.7, alpha=0.7)
 
-    plt.tight_layout(rect=(0, 0.03, 1, 0.95))  # Adjust layout for suptitle
+    plt.tight_layout(rect=(0, 0.03, 1, 0.95))  # Adjust layout for subtitle
     plt.show()
 
 
-# %%
 def compare_LCTYPE(ds1, time1, ds2, time2, lctype, bbox):
-    """For a given LCTYPE, plot the variation in land occupation between time1 and time2 as a raster map."""
+    """Plot the change in fraction for a specific land cover type between two times.
+
+    This function displays a map showing the difference in the land cover fraction
+    for a specific `lctype` between `time1` and `time2`. The map includes
+    geographical context like coastlines and borders.
+
+    Args:
+        ds1: xarray Dataset
+        time1: time to plot
+        ds2: xarray Dataset
+        time2: time to plot
+        lctype: the land use type (integer ID) to plot
+        bbox: optional bounding box
+
+    Returns:
+        None
+    """
     if not _test_inputs(ds1, time1, ds2, time2, bbox):
         return
 
@@ -446,15 +543,13 @@ def compare_LCTYPE(ds1, time1, ds2, time2, lctype, bbox):
     # Create figure and axes with Cartopy projection
     fig, ax = plt.subplots(
         figsize=(12, 8),
-        subplot_kw={
-            "projection": ccrs.PlateCarree()
-        },  # Use PlateCarree for lat/lon data
+        subplot_kw={"projection": ccrs.PlateCarree()},
     )
-    ax.add_feature(cfeature.OCEAN, zorder=1)
-    ax.add_feature(cfeature.COASTLINE, zorder=1)
-    ax.add_feature(cfeature.BORDERS, linestyle="-", zorder=1)
-    ax.add_feature(cfeature.LAKES, alpha=0.5, zorder=1)
-    ax.add_feature(cfeature.RIVERS, zorder=1)
+    ax.add_feature(cfeature.OCEAN, zorder=1)  # type: ignore
+    ax.add_feature(cfeature.COASTLINE, zorder=1)  # type: ignore
+    ax.add_feature(cfeature.BORDERS, linestyle="-", zorder=1)  # type: ignore
+    ax.add_feature(cfeature.LAKES, alpha=0.5, zorder=1)  # type: ignore
+    ax.add_feature(cfeature.RIVERS, zorder=1)  # type: ignore
     # Add provincial and states borders
     provinces = cfeature.NaturalEarthFeature(
         category="cultural",
@@ -464,10 +559,9 @@ def compare_LCTYPE(ds1, time1, ds2, time2, lctype, bbox):
         edgecolor="gray",
         linestyle=":",
     )
-    ax.add_feature(provinces, zorder=1)
+    ax.add_feature(provinces, zorder=1)  # type: ignore
 
     # Plot the data using xarray's plot, specifying the axes and data transform
-    # Assuming 'change' coordinates are standard lat/lon (EPSG:4326)
     img = change.plot(
         ax=ax,
         transform=ccrs.PlateCarree(),  # Specify data CRS
@@ -479,15 +573,15 @@ def compare_LCTYPE(ds1, time1, ds2, time2, lctype, bbox):
             "label": f"Fraction Change ({lctype_name})",
             "shrink": 0.61,  # Shrink colorbar to match the map size
         },
-        zorder=0,  # Plot data below borders on other map elements (zorder=0)
+        zorder=0,  # Plot data below borders and other map elements (zorder=0)
     )
 
     plt.tight_layout()  # minimize whitespace
 
     plt.title(f"Change in '{lctype_name}' Fraction ({time1} to {time2})", pad=20)
 
-    # Add gridlines and labels
-    gl = ax.gridlines(
+    # Add labels
+    gl = ax.gridlines(  # type: ignore
         crs=ccrs.PlateCarree(),
         draw_labels=True,
         linewidth=0,  # Hide gridlines by setting width to 0
